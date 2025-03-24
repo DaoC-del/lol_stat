@@ -1,6 +1,7 @@
 name: lol_lcu
 channels:
   - defaults
+
 dependencies:
   - python=3.12
   - pip
@@ -8,5 +9,5 @@ dependencies:
     - lcu-driver
     - requests
     - psutil==5.6.5
-    - asyncio
     - pandas
+    - rich

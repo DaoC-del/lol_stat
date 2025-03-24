@@ -1,156 +1,129 @@
 from lcu_driver import Connector
 import pandas as pd
+import logging
+import requests
+import asyncio
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, BarColumn, TimeElapsedColumn
+from pathlib import Path
+from datetime import datetime
 
-QUEUE_TYPE = {
-    420: '单双排',
-    440: '灵活组牌',
-    450: '极地大乱斗',
-    430: '匹配',
-    1090: '斗魂竞技场',
-    900: 'URF',
-}
-
-EXCLUDE_QUEUE_IDS = {4}
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+console = Console()
 connector = Connector()
 
-def parse_match_details(raw: dict) -> dict:
-    game_id = raw['gameId']
-    game = {
-        'gameId': game_id,
-        'gameCreationDate': raw.get('gameCreationDate'),
-        'gameDuration': raw.get('gameDuration'),
-        'matchType': QUEUE_TYPE.get(raw.get('queueId'), 'Unknown'),
-    }
-    identities = [{
-        'gameId': game_id,
-        'participantId': ident['participantId'],
-        'summonerName': ident['player'].get('gameName'),
-    } for ident in raw['participantIdentities']]
 
-    participants = []
-    for p in raw['participants']:
-        s = p['stats']
-        participants.append({
-            'gameId': game_id,
-            'participantId': p['participantId'],
-            'summonerName': next(i['summonerName'] for i in identities if i['participantId'] == p['participantId']),
-            'championId': p['championId'],
-            'win': s.get('win'),
-            'kills': s.get('kills'),
-            'deaths': s.get('deaths'),
-            'assists': s.get('assists'),
-            'KDA': round((s.get('kills',0)+s.get('assists',0))/max(1,s.get('deaths',1)),2),
-            'totalDamageDealtToChampions': s.get('totalDamageDealtToChampions'),
-            'damageSelfMitigated': s.get('damageSelfMitigated'),
-            'totalDamageTaken': s.get('totalDamageTaken'),
-            'visionScore': s.get('visionScore'),
-            'timeCCingOthers': s.get('timeCCingOthers'),
-            'goldEarned': s.get('goldEarned'),
-        })
+def load_queue_map() -> dict[int, str]:
+    """Fetch queueId→description mapping from Riot's static queues.json."""
+    url = 'https://static.developer.riotgames.com/docs/lol/queues.json'
+    try:
+        resp = requests.get(url, timeout=5)
+        resp.raise_for_status()
+        return {item['queueId']: item['description'] for item in resp.json()}
+    except Exception:
+        logging.warning("Failed to load queue map, using fallback.")
+        return {420: 'Ranked Solo', 450: 'ARAM', 1700: 'Ascension', 430: 'Normal', 900: 'URF'}
 
-    teams, bans = [], []
-    for team in raw['teams']:
-        teams.append({
-            'gameId': game_id,
-            'teamId': team['teamId'],
-            'win': team.get('win'),
-            'riftHeraldKills': team.get('riftHeraldKills'),
-            'baronKills': team.get('baronKills'),
-            'dragonKills': team.get('dragonKills'),
-        })
-        for ban in team.get('bans', []):
-            bans.append({
-                'gameId': game_id,
-                'teamId': team['teamId'],
-                'championId': ban['championId'],
-            })
 
-    return {
-        'game': [game],
-        'participant_identities': identities,
-        'participants': participants,
-        'teams': teams,
-        'bans': bans,
-    }
+def load_champion_map(version: str = "15.6.1") -> dict[int, str]:
+    url = f"https://ddragon.leagueoflegends.com/cdn/{version}/data/en_US/champion.json"
+    try:
+        resp = requests.get(url, timeout=5)
+        resp.raise_for_status()
+        return {int(v['key']): v['name'] for v in resp.json().get('data', {}).values()}
+    except Exception:
+        logging.warning("Failed to load champion map.")
+        return {}
 
-async def get_summoner(connection):
-    resp = await connection.request('GET','/lol-summoner/v1/current-summoner')
-    return await resp.json()
 
-async def get_match_history(connection, puuid, begIndex, endIndex):
-    resp = await connection.request(
-        'GET',
-        f'/lol-match-history/v1/products/lol/{puuid}/matches',
-        params={'begIndex': begIndex, 'endIndex': endIndex}
-    )
-    if resp.status != 200:
-        raise RuntimeError(await resp.text())
-    return await resp.json()
-
-async def fetch_all_match_history(connection, puuid, page_size=100):
+async def fetch_match_history(connection, puuid):
     all_games = []
-    beg = 0
-    while True:
-        history = await get_match_history(connection, puuid, beg, beg + page_size)
-        page = history.get('games', {}).get('games', [])
-        print(f"Fetching matches {beg}–{beg+page_size}: got {len(page)} records")
-        if not page:
-            break
-        all_games.extend(page)
-        if len(page) < page_size:
-            break
-        beg += page_size
+    beg, page = 0, 100
+    with Progress(SpinnerColumn(), BarColumn(), TimeElapsedColumn(), console=console) as prog:
+        task = prog.add_task("Fetching match history…", total=None)
+        while True:
+            resp = await connection.request('GET', f'/lol-match-history/v1/products/lol/{puuid}/matches', params={'begIndex': beg, 'endIndex': beg+page})
+            data = await resp.json()
+            page_list = data.get('games', {}).get('games', [])
+            if not page_list:
+                break
+            all_games.extend(page_list)
+            prog.advance(task, len(page_list))
+            if len(page_list) < page:
+                break
+            beg += page
     return all_games
 
-async def get_current_game(connection):
-    phase = await (await connection.request('GET','/lol-gameflow/v1/gameflow-phase')).json()
-    if phase != 'None':
-        return await (await connection.request('GET','/lol-champ-select/v1/session')).json()
-    return None
 
-def filter_solo(df: pd.DataFrame) -> pd.DataFrame:
-    return df[df['matchType'] == '单双排']
-
-def filter_aram(df: pd.DataFrame) -> pd.DataFrame:
-    return df[df['matchType'] == '极地大乱斗']
-
-def filter_all(df: pd.DataFrame) -> pd.DataFrame:
-    return df.copy()
-
-@connector.ready
 async def connect(connection):
-    summoner = await get_summoner(connection)
-    puuid = summoner['puuid']
-    print(f"Summoner: {summoner['displayName']}")
+    data_dir = Path('data')
+    data_dir.mkdir(exist_ok=True)
 
-    games = await fetch_all_match_history(connection, puuid)
-    games = [g for g in games if g.get('queueId') not in EXCLUDE_QUEUE_IDS]
-    print(f"Total fetched matches: {len(games)}")
+    summ = await (await connection.request('GET', '/lol-summoner/v1/current-summoner')).json()
+    name = summ.get('displayName') or summ.get('summonerName') or summ.get('summonerId')
+    console.print(f"Logged in as [bold cyan]{name}[/]")
+    puuid = summ['puuid']
 
-    all_entities = {k: [] for k in ['game','participant_identities','participants','teams','bans']}
-    for game_raw in games:
-        parsed = parse_match_details(game_raw)
-        for k, v in parsed.items():
-            all_entities[k].extend(v)
+    queue_map = load_queue_map()
+    champ_map = load_champion_map()
+    cached = None
 
-    df_game = pd.DataFrame(all_entities['game'])
-    df_part = pd.DataFrame(all_entities['participants']).merge(df_game, on='gameId')
+    console.print("Available commands: all, solo, aram, duel, current, quit")
+    while True:
+        choice = await asyncio.get_event_loop().run_in_executor(None, input, ">>> ")
+        if choice == 'quit':
+            break
 
-    print("\n===== 单双排 =====")
-    print(filter_solo(df_part).to_string(index=False))
+        if choice in ('all','solo','aram','duel'):
+            if cached is None:
+                games = await fetch_match_history(connection, puuid)
+                if not games:
+                    console.print("No match history found.")
+                    continue
+                df_game = pd.json_normalize(games)
+                df_game['matchType'] = df_game['queueId'].map(queue_map).fillna('Unknown')
+                records = []
+                for game in games:
+                    for ident in game.get('participantIdentities', []):
+                        pid = ident['participantId']
+                        stats = next((p['stats'] for p in game['participants'] if p['participantId']==pid), {})
+                        champ_id = next((p['championId'] for p in game['participants'] if p['participantId']==pid), None)
+                        records.append({
+                            'gameId': game['gameId'],
+                            'summonerName': ident['player'].get('gameName'),
+                            'championId': champ_id,
+                            'championName': champ_map.get(champ_id, champ_id),
+                            **stats
+                        })
+                df_part = pd.DataFrame(records)
+                cached = {'game': df_game, 'participants': df_part}
 
-    print("\n===== 极地大乱斗 =====")
-    print(filter_aram(df_part).to_string(index=False))
+            df = cached['participants'].merge(cached['game'][['gameId','matchType']], on='gameId')
+            if choice=='solo': df = df[df['matchType']==queue_map.get(420)]
+            if choice=='aram': df = df[df['matchType']==queue_map.get(450)]
+            if choice=='duel': df = df[df['matchType']==queue_map.get(1700)]
 
-    print("\n===== 全模式 =====")
-    print(filter_all(df_part).to_string(index=False))
+            if df.empty:
+                console.print(f"No records for '{choice}'.")
+                continue
 
-    current_game = await get_current_game(connection)
-    print("In‑game:" if current_game else "Not in game right now.")
+            ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+            for name, df_ent in cached.items():
+                out = df_ent[df_ent['gameId'].isin(df['gameId'].unique())]
+                path = data_dir / f"{ts}_{choice}_{name}.csv"
+                out.to_csv(path, index=False)
+                console.print(f"Saved {name} → {path}")
+
+        elif choice=='current':
+            phase = await (await connection.request('GET','/lol-gameflow/v1/gameflow-phase')).json()
+            if phase!='None':
+                console.print(await (await connection.request('GET','/lol-champ-select/v1/session')).json())
+            else:
+                console.print("未找到当前对局")
+        else:
+            console.print("Unknown command — try again.")
+
     await connector.stop()
 
-@connector.ws.register('/lol-gameflow/v1/gameflow-phase', event_types=('UPDATE',))
-async def on_gameflow_update(connection, event):
-    print("Game phase changed →", event.data)
-
+connector.ready(connect)
 connector.start()
