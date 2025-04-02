@@ -13,3 +13,4 @@ dependencies:
     - rich
     - sqlalchemy
     - mysql-connector-python
+    - pyqt5
