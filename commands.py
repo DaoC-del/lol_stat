@@ -3,10 +3,10 @@ import asyncio
 import pandas as pd
 from lcu_driver import Connector
 from rich.console import Console
-from config import engine
-from db import insert_data, show_status, clear_tables
-from mappings import load_queue_map, load_champion_map
-from lcu_client import fetch_match_history, get_current_summoner, get_current_game_phase
+from config.config import engine
+from data.db import insert_data, show_status, clear_tables
+from web.mappings import load_queue_map, load_champion_map
+from web.lcu_client import fetch_match_history, get_current_summoner, get_current_game_phase
 
 console = Console()
 connector = Connector()

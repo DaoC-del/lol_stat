@@ -1,7 +1,7 @@
 # db.py
 import pandas as pd
 from sqlalchemy import inspect, text
-from config import engine
+from config.config import engine
 from rich.console import Console
 
 console = Console()
