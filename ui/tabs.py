@@ -2,7 +2,8 @@ import logging
 import json
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QPushButton, QTextEdit, QSizePolicy, QMessageBox
 from PyQt5.QtCore import QObject, QThread, pyqtSignal
-from web.websocket_client import call_api
+from web import call_api
+
 
 class APITab(QWidget):
     def __init__(self, api_name, parent=None):
