@@ -1,82 +1,66 @@
-import sys
+from PyQt5.QtCore import QThread, QEventLoop
+from web.websocket_client_worker import APICallWorker
 import logging
-from PyQt5.QtWidgets import QApplication
-from PyQt5.QtCore import QEventLoop, QTimer
-from .websocket_client_worker import APICallThread
 
-logger = logging.getLogger(__name__)
+
+class APICallThread(QThread):
+    def __init__(self, api_name: str, api_params: dict = None, parent=None):
+        super().__init__(parent)
+        self.api_name = api_name
+        self.api_params = api_params or {}
+        print(f"[DEBUG] Initializing APICallThread with api_name={self.api_name}")
+        self.worker = APICallWorker(self.api_name, self.api_params)
+
+    def run(self):
+        logging.info(f"{self.api_name}: 工作线程开始执行，触发 call_api")
+        self.worker.run()
+
+
+def call_api(api_name: str, api_params: dict = None):
+    print(f"[DEBUG] call_api invoked with api_name={api_name}")
+    thread = APICallThread(api_name, api_params)
+    loop = QEventLoop()
+    result = {}
+
+    def handle_result(data):
+        result["data"] = data
+        loop.quit()
+
+    thread.worker.resultReady.connect(handle_result)
+    thread.start()
+    loop.exec_()
+    return result.get("data")
+
+
+def call_api_paginated(api_name: str, total_range=(0, 300), page_size=30):
+    start, end = total_range
+    total_pages = (end - start + page_size - 1) // page_size
+    results = []
+
+    for page_index in range(total_pages):
+        params = {"page_index": page_index, "page_size": page_size}
+        print(f"[DEBUG] call_api_paginated: dispatch page_index={page_index}")
+        thread = APICallThread(api_name, api_params=params)
+        loop = QEventLoop()
+        result = {}
+
+        def handle_result(data):
+            result["data"] = data
+            loop.quit()
+
+        thread.worker.resultReady.connect(handle_result)
+        thread.start()
+        loop.exec_()
+
+        if result.get("data"):
+            results.extend(result["data"])
+
+    return results
+
 
 def call_summoner():
-    """
-    调用召唤师数据接口，如果 Lol 进程未启动则在超时后返回 None。
-    """
-    app = QApplication.instance()
-    if app is None:
-        app = QApplication(sys.argv)
-    thread = APICallThread("summoner")
-    result = {"data": None}
+    return call_api("summoner")
 
-    def on_result(data):
-        result["data"] = data
-        logger.info(f"召唤师数据已接收: {data}")
-
-    thread.worker.resultReady.connect(on_result)
-    thread.worker.errorOccurred.connect(on_result)
-    thread.start()
-
-    loop = QEventLoop()
-    thread.worker.resultReady.connect(loop.quit)
-    thread.worker.errorOccurred.connect(loop.quit)
-    timer = QTimer()
-    timer.setSingleShot(True)
-    timer.timeout.connect(loop.quit)
-    timer.start(int(thread.worker.timeout * 1000))
-    loop.exec_()
-    timer.stop()
-    thread.quit()
-    thread.wait()
-    return result["data"]
 
 def call_match_history():
-    """
-    调用比赛记录接口，如果 Lol 进程未启动则在超时后返回 None。
-    """
-    app = QApplication.instance()
-    if app is None:
-        app = QApplication(sys.argv)
-    thread = APICallThread("match_history")
-    result = {"data": None}
-
-    def on_result(data):
-        result["data"] = data
-        logger.info(f"比赛记录已接收: {data}")
-
-    thread.worker.resultReady.connect(on_result)
-    thread.worker.errorOccurred.connect(on_result)
-    thread.start()
-
-    loop = QEventLoop()
-    thread.worker.resultReady.connect(loop.quit)
-    thread.worker.errorOccurred.connect(loop.quit)
-    timer = QTimer()
-    timer.setSingleShot(True)
-    timer.timeout.connect(loop.quit)
-    timer.start(int(thread.worker.timeout * 1000))
-    loop.exec_()
-    timer.stop()
-    thread.quit()
-    thread.wait()
-    return result["data"]
-
-def call_api(api_name, timeout=5):
-    """
-    根据 api_name 分发调用：
-      - "api1" 调用召唤师数据接口
-      - "api2" 调用比赛记录接口
-    """
-    if api_name == "api1":
-        return call_summoner()
-    elif api_name == "api2":
-        return call_match_history()
-    else:
-        return {"status": "error", "api": api_name, "data": "未知的 API 调用"}
+    return call_api("match_history", {"page_index": 0, "page_size": 30})

@@ -6,29 +6,31 @@ from rich.console import Console
 
 console = Console()
 
-async def fetch_match_history(conn, puuid):
-    all_games = []
-    beg, page = 0, 100
-    with Progress(SpinnerColumn(), BarColumn(), TimeElapsedColumn(), console=console) as prog:
-        task = prog.add_task("Fetching match history…", total=None)
-        while True:
-            resp = await conn.request('GET', f'/lol-match-history/v1/products/lol/{puuid}/matches',
-                                       params={'begIndex': beg, 'endIndex': beg+page})
-            games = (await resp.json()).get('games', {}).get('games', [])
-            if not games:
-                break
-            all_games.extend(games)
-            prog.advance(task, len(games))
-            if len(games) < page:
-                break
-            beg += page
-    return all_games
+async def fetch_match_history_page(conn, puuid: str, page_index: int, page_size: int = 30):
+    beg_index = page_index * page_size
+    end_index = beg_index + page_size
+
+    resp = await conn.request(
+        'GET',
+        f'/lol-match-history/v1/products/lol/{puuid}/matches',
+        params={'begIndex': beg_index, 'endIndex': end_index}  # ✅ 修复拼写
+    )
+
+    try:
+        json_data = await resp.json()
+        print(f"[DEBUG] raw match history response: {json_data}")
+        return json_data.get('games', {}).get('games', [])
+    except Exception as e:
+        print(f"Failed to parse match history: {e}")
+        return []
 
 async def get_current_summoner(conn):
     summ = await (await conn.request('GET','/lol-summoner/v1/current-summoner')).json()
     name = summ.get('displayName') or summ.get('summonerName') or summ.get('summonerId')
-    puuid = summ['puuid']
-    console.print(f"Logged in as [bold cyan]{name}[/]")
+    puuid = summ.get('puuid')
+    
+    print(f"[DEBUG] Summoner info: name={name}, puuid={puuid}")
+    
     return summ, puuid
 
 async def get_current_game_phase(conn):
