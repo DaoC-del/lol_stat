@@ -1,6 +1,7 @@
 from PyQt5.QtCore import QThread, QEventLoop
-from web.websocket_client_worker import APICallWorker
 import logging
+import concurrent.futures
+from web.websocket_client_worker import APICallWorker
 
 
 class APICallThread(QThread):
@@ -8,16 +9,14 @@ class APICallThread(QThread):
         super().__init__(parent)
         self.api_name = api_name
         self.api_params = api_params or {}
-        print(f"[DEBUG] Initializing APICallThread with api_name={self.api_name}")
         self.worker = APICallWorker(self.api_name, self.api_params)
 
     def run(self):
-        logging.info(f"{self.api_name}: 工作线程开始执行，触发 call_api")
+        logging.info(f"{self.api_name}: 工作线程开始执行")
         self.worker.run()
 
 
 def call_api(api_name: str, api_params: dict = None):
-    print(f"[DEBUG] call_api invoked with api_name={api_name}")
     thread = APICallThread(api_name, api_params)
     loop = QEventLoop()
     result = {}
@@ -32,28 +31,34 @@ def call_api(api_name: str, api_params: dict = None):
     return result.get("data")
 
 
-def call_api_paginated(api_name: str, total_range=(0, 300), page_size=30):
+def call_api_paginated(
+    api_name: str,
+    total_range=(0, 300),
+    page_size=30,
+    max_workers=3,
+    progress_callback=None,
+    status_callback=None
+):
     start, end = total_range
     total_pages = (end - start + page_size - 1) // page_size
     results = []
 
-    for page_index in range(total_pages):
-        params = {"page_index": page_index, "page_size": page_size}
-        print(f"[DEBUG] call_api_paginated: dispatch page_index={page_index}")
-        thread = APICallThread(api_name, api_params=params)
-        loop = QEventLoop()
-        result = {}
+    def fetch_page(index):
+        if status_callback:
+            status_callback(f"Fetching page {index + 1}/{total_pages}...")
+        page_data = call_api(api_name, {"page_index": index, "page_size": page_size})
+        if progress_callback:
+            progress_callback(index + 1, total_pages)
+        if status_callback:
+            status_callback(f"Fetched {len(page_data)} items from page {index + 1}")
+        return page_data
 
-        def handle_result(data):
-            result["data"] = data
-            loop.quit()
-
-        thread.worker.resultReady.connect(handle_result)
-        thread.start()
-        loop.exec_()
-
-        if result.get("data"):
-            results.extend(result["data"])
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(fetch_page, i) for i in range(total_pages)]
+        for future in concurrent.futures.as_completed(futures):
+            page_data = future.result()
+            if page_data:
+                results.extend(page_data)
 
     return results
 
@@ -64,3 +69,14 @@ def call_summoner():
 
 def call_match_history():
     return call_api("match_history", {"page_index": 0, "page_size": 30})
+
+
+def call_match_history_paginated(progress_callback=None, status_callback=None):
+    return call_api_paginated(
+        "match_history",
+        total_range=(0, 300),
+        page_size=30,
+        max_workers=3,
+        progress_callback=progress_callback,
+        status_callback=status_callback
+    )

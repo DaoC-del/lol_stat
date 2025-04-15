@@ -18,7 +18,6 @@ async def fetch_match_history_page(conn, puuid: str, page_index: int, page_size:
 
     try:
         json_data = await resp.json()
-        print(f"[DEBUG] raw match history response: {json_data}")
         return json_data.get('games', {}).get('games', [])
     except Exception as e:
         print(f"Failed to parse match history: {e}")
