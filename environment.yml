@@ -1,16 +1,29 @@
 name: lol_lcu
 channels:
+  - conda-forge
   - defaults
 
 dependencies:
-  - python=3.12
+  # 核心解释器
+  - python=3.11
+
+  # Conda-build 轮子优先装
   - pip
+  - pandas
+  - rich
+  - sqlalchemy
+  - mysql-connector-python       # conda-forge 有轮子
+  - pyqt=5                       # PyQt5 已提供 3.11 兼容 build
+  - psutil                       # conda 会取 5.9.x
+  - aiohttp                      # >=3.9,<4
+  - websockets                   # lcu-driver 依赖，3.11 可用
+  - requests
+  - pymysql
+
+  # 其余通过 pip 安装
   - pip:
-    - lcu-driver
-    - requests
-    - psutil==5.6.5
-    - pandas
-    - rich
-    - sqlalchemy
-    - mysql-connector-python
-    - pyqt5
+      - lcu-driver>=0.4.0
+      - pyqt5
+      - cryptography
+      # 如果想用 RiotWatcher，可解开下一行
+      # - riotwatcher

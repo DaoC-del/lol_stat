@@ -1,8 +1,12 @@
+# websocket_client_api.py（完整保留：线程封装、API 调用、数据库落库、批量入库）
+
 from PyQt5.QtCore import QThread, QEventLoop
 import logging
 import concurrent.futures
 from web.websocket_client_worker import APICallWorker
-
+from web.match_storage import connect_mysql, insert_match_json
+from lcu_driver import Connector
+from web.lcu_client import fetch_and_store_history
 
 class APICallThread(QThread):
     def __init__(self, api_name: str, api_params: dict = None, parent=None):
@@ -14,7 +18,6 @@ class APICallThread(QThread):
     def run(self):
         logging.info(f"{self.api_name}: 工作线程开始执行")
         self.worker.run()
-
 
 def call_api(api_name: str, api_params: dict = None):
     thread = APICallThread(api_name, api_params)
@@ -29,7 +32,6 @@ def call_api(api_name: str, api_params: dict = None):
     thread.start()
     loop.exec_()
     return result.get("data")
-
 
 def call_api_paginated(
     api_name: str,
@@ -62,14 +64,11 @@ def call_api_paginated(
 
     return results
 
-
 def call_summoner():
     return call_api("summoner")
 
-
 def call_match_history():
     return call_api("match_history", {"page_index": 0, "page_size": 30})
-
 
 def call_match_history_paginated(progress_callback=None, status_callback=None):
     return call_api_paginated(
@@ -80,3 +79,20 @@ def call_match_history_paginated(progress_callback=None, status_callback=None):
         progress_callback=progress_callback,
         status_callback=status_callback
     )
+
+def store_match_detail(match_json):
+    conn = connect_mysql()
+    insert_match_json(match_json, conn)
+    conn.close()
+
+# 自动分页拉取并入库（用于 API3）
+def call_match_history_and_store():
+    connector = Connector()
+
+    @connector.ready
+    async def on_ready(connection):
+        for page_index in range(5):  # 拉取前 5 页
+            await fetch_and_store_history(connection, page_index=page_index, page_size=30)
+        await connector.stop()
+
+    connector.start()
